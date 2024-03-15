@@ -146,6 +146,8 @@ int handle_client(int client_socket) {
 
         return 0;
     } else if (command == "REC") {
+        std::cout << "REC" << std::endl;
+
         if (filePath == nullptr) {
             std::cout << "File not ready" << std::endl;
             // Send response to client
@@ -173,7 +175,7 @@ int handle_client(int client_socket) {
         }
 
         // Send response to client
-        const char *response_start = "PROTO:1.4.8.8#REC#START#";
+        const char *response_start = "PROTO:1.4.8.8#REC#OK#";
         send(client_socket, response_start, strlen(response_start), 0);
 
         char response_buffer[BUFFER_SIZE];
@@ -181,10 +183,10 @@ int handle_client(int client_socket) {
         do {
             inputFile.read(&response_buffer[0], BUFFER_SIZE);
             send(client_socket, response_buffer, inputFile.gcount(), 0);
+            std::cout << "gcount: " << inputFile.gcount() << std::endl;
         } while (inputFile.gcount() > 0);
 
-        const char *response_end = "PROTO:1.4.8.8#REC#END#";
-        send(client_socket, response_end, strlen(response_end), 0);
+        send(client_socket, reinterpret_cast<const void *>(0x4), 1, 0);
         return 0;
     }
 
