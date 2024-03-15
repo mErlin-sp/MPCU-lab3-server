@@ -6,6 +6,7 @@
 #include <csignal>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 
 const int BUFFER_SIZE = 1024;
 // Flag to indicate if the program should continue running
@@ -120,7 +121,6 @@ int handle_client(int client_socket) {
         std::cout << "Parsed filename: " << file_name << std::endl;
 
         //Search for a file in search directory
-
         filePath = findFile(directoryPath, file_name);
         if (filePath == nullptr) {
             // Send response to client
@@ -136,7 +136,7 @@ int handle_client(int client_socket) {
         std::cout << "File size: " << fileSize << std::endl;
 
         // Send response to client
-        std::string response = "PROTO:1.4.8.8#NEW#";
+        std::string response = "PROTO:1.4.8.8#NEW#OK#";
         response += file_name;
         response += '#';
         response += std::to_string(fileSize);
@@ -144,6 +144,47 @@ int handle_client(int client_socket) {
 
         send(client_socket, response.c_str(), strlen(response.c_str()), 0);
 
+        return 0;
+    } else if (command == "REC") {
+        if (filePath == nullptr) {
+            std::cout << "File not ready" << std::endl;
+            // Send response to client
+            std::string response = "PROTO:1.4.8.8#REC#ERR#";
+            response += "File not ready";
+            response += (char) 0x4;
+
+            send(client_socket, response.c_str(), strlen(response.c_str()), 0);
+
+            return 0;
+        }
+
+        //Send raw file data
+        std::ifstream inputFile(*filePath);
+        if (!inputFile.is_open()) {
+            std::cout << "Failed to open file" << std::endl;
+
+            // Send response to client
+            std::string response = "PROTO:1.4.8.8#REC#ERR#";
+            response += "Failed to open file";
+            response += (char) 0x4;
+
+            send(client_socket, response.c_str(), strlen(response.c_str()), 0);
+            return 0;
+        }
+
+        // Send response to client
+        const char *response_start = "PROTO:1.4.8.8#REC#START#";
+        send(client_socket, response_start, strlen(response_start), 0);
+
+        char response_buffer[BUFFER_SIZE];
+
+        do {
+            inputFile.read(&response_buffer[0], BUFFER_SIZE);
+            send(client_socket, response_buffer, inputFile.gcount(), 0);
+        } while (inputFile.gcount() > 0);
+
+        const char *response_end = "PROTO:1.4.8.8#REC#END#";
+        send(client_socket, response_end, strlen(response_end), 0);
         return 0;
     }
 
