@@ -77,7 +77,7 @@ int handle_client(int client_socket) {
     }
     if (protocol != "PROTO:1.4.8.8") {
         // Send response to client
-        std::cout << "Invalid protocol" << std::endl;
+        std::cerr << "Invalid protocol" << std::endl;
         const char *response = "Invalid protocol";
         send(client_socket, response, strlen(response), 0);
         return 0;
@@ -138,6 +138,7 @@ int handle_client(int client_socket) {
         // Send response to client
         std::string response = "PROTO:1.4.8.8#NEW#OK#";
         response += file_name;
+        response += (char) 0x1C;
         response += '#';
         response += std::to_string(fileSize);
         response += (char) 0x4;
@@ -186,7 +187,10 @@ int handle_client(int client_socket) {
             std::cout << "gcount: " << inputFile.gcount() << std::endl;
         } while (inputFile.gcount() > 0);
 
-        send(client_socket, reinterpret_cast<const void *>(0x4), 1, 0);
+        char end = 0x4;
+        send(client_socket, &end, 1, 0);
+        std::cout << "SENT" << std::endl;
+
         return 0;
     }
 
