@@ -2,6 +2,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <csignal>
 #include <chrono>
@@ -9,6 +10,8 @@
 #include <fstream>
 
 const int BUFFER_SIZE = 1024;
+const int MAX_CLIENTS = 5; // Maximum number of concurrent clients
+
 // Flag to indicate if the program should continue running
 volatile sig_atomic_t interrupted = 0;
 
@@ -184,7 +187,7 @@ int handle_client(int client_socket) {
         do {
             inputFile.read(&response_buffer[0], BUFFER_SIZE);
             send(client_socket, response_buffer, inputFile.gcount(), 0);
-            std::cout << "gcount: " << inputFile.gcount() << std::endl;
+//            std::cout << "gcount: " << inputFile.gcount() << std::endl;
         } while (inputFile.gcount() > 0);
 
         char end = 0x4;
@@ -203,18 +206,42 @@ int handle_client(int client_socket) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 4) {
-        std::cerr << "Usage: " << argv[0] << "./program <server_address> <server_port> <directory_path>" << std::endl;
-        return 1;
-    }
-
     // Install signal handler for SIGINT
     std::signal(SIGINT, signal_handler);
 
+    int opt;
+    bool parallel = false;
+    bool parallel3 = false;
+    pid_t pid;
+
+    while ((opt = getopt(argc, argv, ":p3")) != -1) {
+        switch (opt) {
+            case 'p':
+                std::cout << "parallel" << std::endl;
+                parallel = true;
+                break;
+            case '3':
+                std::cout << "parallel3" << std::endl;
+                parallel3 = true;
+                break;
+            default:
+                std::cerr << "Usage: " << argv[0] << "./program <server_address> <server_port> <directory_path> [-p]"
+                          << std::endl;
+                return 1;
+        }
+    }
+
+    if (argc - optind != 3) {
+        std::cerr << "Usage: " << argv[0] << "./program <server_address> <server_port> <directory_path> [-p]"
+                  << std::endl;
+        return 1;
+    }
+
+
     // Parse command line arguments
-    uint32_t serverAddress = std::stoi(argv[1]);
-    uint16_t serverPort = std::stoi(argv[2]);
-    directoryPath = argv[3];
+    uint32_t serverAddress = std::stoi(argv[optind++]);
+    uint16_t serverPort = std::stoi(argv[optind++]);
+    directoryPath = argv[optind++];
 
     int server_socket;
     int client_socket;
@@ -239,42 +266,130 @@ int main(int argc, char *argv[]) {
     }
 
     // Listen for incoming connections
-    if (listen(server_socket, 5) < 0) {
+    if (listen(server_socket, (parallel || parallel3) ? MAX_CLIENTS : 1) < 0) {
         perror("Error listening for connections");
         return 1;
     }
 
     std::cout << "Server started. Listening on port " << serverPort << " (" << ntohs(serverPort) << ")" << std::endl;
 
-    // Accept incoming connections and handle them iteratively
-    while (!interrupted) {
-        client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
-        if (client_socket < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    if (parallel3) {
+        for (int i = 0; i < MAX_CLIENTS; ++i) {
+            pid = fork();
+            if (pid < 0) {
+                std::cerr << "Failed to fork." << std::endl;
+                return 1;
+            } else if (pid == 0) {
+                // Child process: handle client connections
+                std::cout << "Child process. PID: " << pid << std::endl;
+                while (!interrupted) {
+                    client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
+                    if (client_socket < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            continue;
+                        }
+                        perror("Error accepting connection");
+                        continue;
+                    }
+
+                    std::cout << "Client connected" << std::endl;
+                    auto con_timeout = millis();
+
+                    while (!interrupted && millis() - con_timeout < 30000) {
+                        // Handle client request
+                        int err = handle_client(client_socket);
+                        if (err == 0) {
+                            con_timeout = millis();
+                        } else if (err == 2) {
+                            break;
+                        }
+                    }
+
+                    // Close client socket
+                    close(client_socket);
+                    delete filePath;
+                    filePath = nullptr;
+                    std::cout << "Client disconnected" << std::endl;
+                }
+                exit(0);
+            }
+        }
+
+        // Parent process: wait for all child processes to exit
+        std::cout << "Parent process. PID: " << pid << std::endl;
+        for (int i = 0; i < MAX_CLIENTS; ++i) {
+            wait(nullptr);
+        }
+    } else {
+        // Accept incoming connections and handle them iteratively
+        while (!interrupted) {
+            client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
+            if (client_socket < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;
+                }
+                perror("Error accepting connection");
                 continue;
             }
-            perror("Error accepting connection");
-            continue;
-        }
 
-        std::cout << "Client connected" << std::endl;
-        auto con_timeout = millis();
+            std::cout << "Client connected" << std::endl;
+            auto con_timeout = millis();
 
-        while (!interrupted && millis() - con_timeout < 30000) {
-            // Handle client request
-            int err = handle_client(client_socket);
-            if (err == 0) {
-                con_timeout = millis();
-            } else if (err == 2) {
-                break;
+            if (parallel) {
+                // Fork a new process to handle the client connection
+                pid = fork();
+                if (pid < 0) {
+                    std::cerr << "Failed to fork." << std::endl;
+                    close(client_socket);
+                    continue;
+                } else if (pid == 0) {
+                    // Child process: handle client connection
+                    std::cout << "Child process. PID: " << pid << std::endl;
+                    close(server_socket); // Close the server socket in the child process
+                    while (!interrupted && millis() - con_timeout < 30000) {
+                        // Handle client request
+                        int err = handle_client(client_socket);
+                        if (err == 0) {
+                            con_timeout = millis();
+                        } else if (err == 2) {
+                            break;
+                        }
+                    }
+
+                    // Close client socket
+                    close(client_socket);
+                    delete filePath;
+                    filePath = nullptr;
+                    std::cout << "Client disconnected" << std::endl;
+
+                    exit(0); // Terminate the child process
+                } else {
+                    // Parent process: close client socket and continue accepting new connections
+                    std::cout << "Parent process. PID: " << pid << std::endl;
+                    close(client_socket);
+
+                    // Wait for any terminated child processes to prevent zombies
+                    while (waitpid(-1, NULL, WNOHANG) > 0);
+                }
+            } else {
+                while (!interrupted && millis() - con_timeout < 30000) {
+                    // Handle client request
+                    int err = handle_client(client_socket);
+                    if (err == 0) {
+                        con_timeout = millis();
+                    } else if (err == 2) {
+                        break;
+                    }
+                }
+
+                // Close client socket
+                close(client_socket);
+                delete filePath;
+                filePath = nullptr;
+                std::cout << "Client disconnected" << std::endl;
+
             }
         }
-
-        // Close client socket
-        close(client_socket);
-        delete filePath;
-        filePath = nullptr;
-        std::cout << "Client disconnected" << std::endl;
     }
 
     // Close server socket
