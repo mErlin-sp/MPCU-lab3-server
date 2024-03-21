@@ -1,23 +1,11 @@
-#include <iostream>
-#include <cstring>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <netinet/in.h>
-#include <csignal>
-#include <chrono>
-#include <filesystem>
-#include <fstream>
+#include "MyClient.h"
 
-const int BUFFER_SIZE = 1024;
-const int MAX_CLIENTS = 5; // Maximum number of concurrent clients
 
 // Flag to indicate if the program should continue running
 volatile sig_atomic_t interrupted = 0;
 
-namespace fs = std::filesystem;
+std::string directory_path;
 
-std::string directoryPath;
 fs::path *filePath;
 
 // Signal handler for SIGINT
@@ -36,19 +24,6 @@ auto millis() {
     // Convert the duration to milliseconds
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     return millis;
-}
-
-
-// Function to search for a file in a directory and return a pointer to it
-fs::path *findFile(const std::string &directory, const std::string &filename) {
-    fs::path *result = nullptr;
-    for (const auto &entry: fs::directory_iterator(directory)) {
-        if (entry.is_regular_file() && entry.path().filename() == filename) {
-            result = new fs::path(entry.path());
-            break;
-        }
-    }
-    return result;
 }
 
 int handle_client(int client_socket) {
@@ -124,7 +99,7 @@ int handle_client(int client_socket) {
         std::cout << "Parsed filename: " << file_name << std::endl;
 
         //Search for a file in search directory
-        filePath = findFile(directoryPath, file_name);
+        filePath = find_file(directory_path, file_name);
         if (filePath == nullptr) {
             // Send response to client
             std::cout << "File not found" << std::endl;
@@ -205,43 +180,56 @@ int handle_client(int client_socket) {
     return 0;
 }
 
+void print_usage() {
+    std::cerr << "Usage: " << "./program <server_address> <server_port> <directory_path> [-p] [-m]" << std::endl;
+}
+
 int main(int argc, char *argv[]) {
     // Install signal handler for SIGINT
     std::signal(SIGINT, signal_handler);
 
     int opt;
-    bool parallel = false;
-    bool parallel3 = false;
+
+    int parallel = 0;
+    int maxClients = 1; // Maximum number of concurrent clients
     pid_t pid;
 
-    while ((opt = getopt(argc, argv, ":p3")) != -1) {
+    while ((opt = getopt(argc, argv, ":p:m:")) != -1) {
+//        std::cout << "opt: " << std::to_string(opt) << std::endl;
+//        std::cout << "opt_arg: " << optarg << std::endl;
         switch (opt) {
-            case 'p':
-                std::cout << "parallel" << std::endl;
-                parallel = true;
+            case 'm':
+                maxClients = std::stoi(optarg);
+                if (maxClients == 0) {
+                    print_usage();
+                    return 1;
+                }
                 break;
-            case '3':
-                std::cout << "parallel3" << std::endl;
-                parallel3 = true;
+            case 'p':
+                if (*optarg > '4') {
+                    print_usage();
+                    return 1;
+                }
+                parallel = *optarg - '0';
                 break;
             default:
-                std::cerr << "Usage: " << argv[0] << "./program <server_address> <server_port> <directory_path> [-p]"
-                          << std::endl;
+                print_usage();
                 return 1;
         }
     }
 
+    std::cout << "parallel: " << std::to_string(parallel) << std::endl;
+    std::cout << "max clients: " << std::to_string(maxClients) << std::endl;
+
     if (argc - optind != 3) {
-        std::cerr << "Usage: " << argv[0] << "./program <server_address> <server_port> <directory_path> [-p]"
-                  << std::endl;
+        print_usage();
         return 1;
     }
-
 
     // Parse command line arguments
     uint32_t serverAddress = std::stoi(argv[optind++]);
     uint16_t serverPort = std::stoi(argv[optind++]);
-    directoryPath = argv[optind++];
+    directory_path = argv[optind++];
 
     int server_socket;
     int client_socket;
@@ -266,61 +254,16 @@ int main(int argc, char *argv[]) {
     }
 
     // Listen for incoming connections
-    if (listen(server_socket, (parallel || parallel3) ? MAX_CLIENTS : 1) < 0) {
+    if (listen(server_socket, parallel ? maxClients : 1) < 0) {
         perror("Error listening for connections");
         return 1;
     }
 
     std::cout << "Server started. Listening on port " << serverPort << " (" << ntohs(serverPort) << ")" << std::endl;
 
-    if (parallel3) {
-        for (int i = 0; i < MAX_CLIENTS; ++i) {
-            pid = fork();
-            if (pid < 0) {
-                std::cerr << "Failed to fork." << std::endl;
-                return 1;
-            } else if (pid == 0) {
-                // Child process: handle client connections
-                std::cout << "Child process. PID: " << pid << std::endl;
-                while (!interrupted) {
-                    client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
-                    if (client_socket < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            continue;
-                        }
-                        perror("Error accepting connection");
-                        continue;
-                    }
+    if (parallel <= 2) {
+        std::cout << "parallel2" << std::endl;
 
-                    std::cout << "Client connected" << std::endl;
-                    auto con_timeout = millis();
-
-                    while (!interrupted && millis() - con_timeout < 30000) {
-                        // Handle client request
-                        int err = handle_client(client_socket);
-                        if (err == 0) {
-                            con_timeout = millis();
-                        } else if (err == 2) {
-                            break;
-                        }
-                    }
-
-                    // Close client socket
-                    close(client_socket);
-                    delete filePath;
-                    filePath = nullptr;
-                    std::cout << "Client disconnected" << std::endl;
-                }
-                exit(0);
-            }
-        }
-
-        // Parent process: wait for all child processes to exit
-        std::cout << "Parent process. PID: " << pid << std::endl;
-        for (int i = 0; i < MAX_CLIENTS; ++i) {
-            wait(nullptr);
-        }
-    } else {
         // Accept incoming connections and handle them iteratively
         while (!interrupted) {
             client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
@@ -390,6 +333,157 @@ int main(int argc, char *argv[]) {
 
             }
         }
+    } else if (parallel <= 3) {
+        std::cout << "parallel3" << std::endl;
+
+        for (int i = 0; i < maxClients; ++i) {
+            pid = fork();
+            if (pid < 0) {
+                std::cerr << "Failed to fork." << std::endl;
+                return 1;
+            } else if (pid == 0) {
+                // Child process: handle client connections
+                std::cout << "Child process. PID: " << pid << std::endl;
+                while (!interrupted) {
+                    client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
+                    if (client_socket < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            continue;
+                        }
+                        perror("Error accepting connection");
+                        continue;
+                    }
+
+                    std::cout << "Client connected" << std::endl;
+                    auto con_timeout = millis();
+
+                    while (!interrupted && millis() - con_timeout < 30000) {
+                        // Handle client request
+                        int err = handle_client(client_socket);
+                        if (err == 0) {
+                            con_timeout = millis();
+                        } else if (err == 2) {
+                            break;
+                        }
+                    }
+
+                    // Close client socket
+                    close(client_socket);
+                    delete filePath;
+                    filePath = nullptr;
+                    std::cout << "Client disconnected" << std::endl;
+                }
+                exit(0);
+            }
+        }
+
+        // Parent process: wait for all child processes to exit
+        std::cout << "Parent process. PID: " << pid << std::endl;
+        for (int i = 0; i < maxClients; ++i) {
+            wait(nullptr);
+        }
+    } else if (parallel <= 4) {
+        std::cout << "parallel4" << std::endl;
+
+        std::vector<MyClient> client_fds;
+        fd_set read_fds;
+        pollfd pollfds[maxClients + 1];
+
+        pollfds[0].fd = server_socket;
+        pollfds[0].events = POLLIN | POLLOUT;
+
+        while (!interrupted) {
+            int n_ready = poll(pollfds, client_fds.size() + 1, -1);
+            if (n_ready < 0) {
+                perror("poll");
+                continue;
+            }
+
+            if (pollfds[0].revents & POLLIN) {
+                // Accept the incoming connection
+                client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
+                if (client_socket < 0) {
+                    perror("Error accepting connection");
+                    continue;
+                }
+
+                client_fds.emplace_back(client_socket, directory_path);
+                pollfds[client_fds.size()].fd = client_socket;
+                pollfds[client_fds.size()].events = POLLIN;
+
+            }
+
+            std::cout << "client_fds.size(): " << client_fds.size() << std::endl;
+            for (int i = 0; i <= client_fds.size(); ++i) {
+                std::cout << "i: " << i << std::endl;
+                if (pollfds[i + 1].revents & POLLIN & client_fds[i].is_receiving()) {
+                    std::cout << "poll_in: " << i << std::endl;
+                    if (client_fds[i].socket_ready() != 0) {
+                        close(pollfds[i + 1].fd);
+                        client_fds.erase(client_fds.begin() + i);
+                    }
+                } else if (pollfds[i + 1].revents & POLLOUT & !client_fds[i].is_receiving()) {
+                    std::cout << "poll_out: " << i << std::endl;
+                    if (client_fds[i].socket_ready() != 0) {
+                        close(pollfds[i + 1].fd);
+                        client_fds.erase(client_fds.begin() + i);
+                    }
+                }
+            }
+        }
+
+//        fd_set read_fds;
+//        int max_sd;
+//        struct timeval timeout{};
+//
+//        // Initialize the file descriptor set
+//        FD_ZERO(&read_fds);
+//        FD_SET(server_socket, &read_fds);
+//        max_sd = server_socket;
+//
+//        while (!interrupted) {
+//            // Set the timeout
+//            timeout.tv_sec = 1;
+//            timeout.tv_usec = 0;
+//
+//            // Wait for activity on any of the sockets
+//            if ((select(max_sd + 1, &read_fds, nullptr, nullptr, &timeout) < 0) && (errno != EINTR)) {
+//                perror("Error in select");
+//                break;
+//            }
+//
+//            if (FD_ISSET(server_socket, &read_fds)) {
+//                // Accept the incoming connection
+//                client_socket = accept(server_socket, (sockaddr *) &client_addr, &client_addr_len);
+//                if (client_socket < 0) {
+//                    perror("Error accepting connection");
+//                    break;
+//                }
+//
+//                std::cout << "Client connected" << std::endl;
+//
+//                // Fork a new process to handle the client connection
+//                pid = fork();
+//                if (pid < 0) {
+//                    perror("Error forking process");
+//                    break;
+//                } else if (pid == 0) {
+//                    // Child process: handle client connection
+//                    close(server_socket); // Close the server socket in the child process
+//                    handle_client(client_socket);
+//                    close(client_socket);
+//                    std::cout << "Client disconnected" << std::endl;
+//                    return 0;
+//                } else {
+//                    // Parent process: close client socket and continue accepting new connections
+//                    close(client_socket);
+//                }
+//
+//            }
+//        }
+    } else {
+        std::cerr << "Invalid server type!" << std::endl;
+        return 1;
     }
 
     // Close server socket
