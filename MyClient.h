@@ -46,6 +46,8 @@ private:
 
     fs::path *_file_path = nullptr;
 
+    std::streampos _file_offset = -1;
+
     bool _receive = true;
 
     int _client_socket;
@@ -55,6 +57,8 @@ private:
     char *_c = &_buffer[0];
 
     void process_received_data();
+
+    void fill_send_buffer();
 
     long _timer;
 };

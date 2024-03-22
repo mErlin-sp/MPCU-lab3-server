@@ -99,10 +99,22 @@ int MyClient::socket_ready() {
             std::cout << _c[0] << std::endl;
             if (_c - &_buffer[0] > BUFFER_SIZE) {
                 std::cerr << "Buffer overflow" << std::endl;
+                exit(0);
                 return 1;
             }
 
             *cc = *_c;
+
+            if (*_c == '\0') {//&& _file_offset != -1
+                fill_send_buffer();
+                if (strlen(_buffer) == 0) {
+                    std::cerr << "Empty file" << std::endl;
+                    return 1;
+                }
+
+                _c = &_buffer[0];
+                continue;
+            }
             _c++;
 
             if (*cc == 0x4) {
@@ -210,39 +222,49 @@ void MyClient::process_received_data() {
         }
 
         //Send raw file data
-        std::ifstream inputFile(*_file_path);
-        if (!inputFile.is_open()) {
+        if (std::ifstream input_file(*_file_path); !input_file.is_open()) {
             std::cerr << "Failed to open file" << std::endl;
             sprintf(_buffer, "PROTO:1.4.8.8#REC#ERR#%s\x4", "Failed to open file");
             return;
         }
+        _file_offset = 0;
 
         // Send response to client
-        sprintf(_buffer, "PROTO:1.4.8.8#REC#OK#\x4");
+        sprintf(_buffer, "PROTO:1.4.8.8#REC#OK#");
         return;
-
-//        // Send response to client
-//        const char *response_start = "PROTO:1.4.8.8#REC#OK#";
-//        send(client_socket, response_start, strlen(response_start), 0);
-//
-//        char response_buffer[BUFFER_SIZE];
-//
-//        do {
-//            inputFile.read(&response_buffer[0], BUFFER_SIZE);
-//            send(client_socket, response_buffer, inputFile.gcount(), 0);
-////            std::cout << "gcount: " << inputFile.gcount() << std::endl;
-//        } while (inputFile.gcount() > 0);
-//
-//        char end = 0x4;
-//        send(client_socket, &end, 1, 0);
-//        std::cout << "SENT" << std::endl;
-//
-//        return 0;
     }
 
 
     // Send response to client
     sprintf(_buffer, "PROTO:1.4.8.8#REC#ERR#%s#\x4", "Invalid command");
+}
+
+void MyClient::fill_send_buffer() {
+    std::cout << "fill buffer" << std::endl;
+
+    std::ifstream input_file(*_file_path);
+    if (!input_file.is_open()) {
+        _buffer[0] = '\0';
+        return;
+    }
+
+    input_file.seekg(_file_offset);
+    input_file.read(&_buffer[0], BUFFER_SIZE - 1);
+    _file_offset = input_file.tellg();
+
+    // Check if we are at the end of the file
+    if (input_file.eof()) {
+        std::cout << "Reached end of file" << std::endl;
+        _buffer[input_file.gcount()] = '\x4';
+    } else {
+        std::cout << "Not at end of file" << std::endl;
+        _buffer[input_file.gcount()] = '\0';
+    }
+
+    input_file.close();
+
+    std::cout << "g_count: " << input_file.gcount() << std::endl;
+    std::cout << "file_offset: " << _file_offset << std::endl;
 }
 
 MyClient::~MyClient() {
