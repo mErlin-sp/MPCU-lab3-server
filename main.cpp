@@ -14,17 +14,6 @@ void signal_handler(int signal) {
     interrupted = 1;
 }
 
-auto millis() {
-    // Get the current time point
-    auto now = std::chrono::system_clock::now();
-
-    // Get the duration since the epoch (time point in milliseconds)
-    auto duration = now.time_since_epoch();
-
-    // Convert the duration to milliseconds
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    return millis;
-}
 
 int handle_client(int client_socket) {
     char buffer[BUFFER_SIZE];
@@ -390,7 +379,7 @@ int main(int argc, char *argv[]) {
         pollfd pollfds[maxClients + 1];
 
         pollfds[0].fd = server_socket;
-        pollfds[0].events = POLLIN | POLLOUT;
+        pollfds[0].events = POLLIN | POLLOUT | POLLERR | POLLHUP | POLLNVAL;
 
         while (!interrupted) {
             int n_ready = poll(pollfds, client_fds.size() + 1, -1);
@@ -409,27 +398,38 @@ int main(int argc, char *argv[]) {
 
                 client_fds.emplace_back(client_socket, directory_path);
                 pollfds[client_fds.size()].fd = client_socket;
-                pollfds[client_fds.size()].events = POLLIN;
+                pollfds[client_fds.size()].events = POLLIN | POLLOUT;
 
             }
+//            else if (pollfds[0].revents > 0) {
+//                std::cout << "some event occurred" << std::endl;
+//            }
 
-            std::cout << "client_fds.size(): " << client_fds.size() << std::endl;
-            for (int i = 0; i <= client_fds.size(); ++i) {
-                std::cout << "i: " << i << std::endl;
-                if (pollfds[i + 1].revents & POLLIN & client_fds[i].is_receiving()) {
-                    std::cout << "poll_in: " << i << std::endl;
-                    if (client_fds[i].socket_ready() != 0) {
+//            std::cout << "client_fds.size(): " << client_fds.size() << std::endl;
+            for (int i = 0; i < client_fds.size(); ++i) {
+//                std::cout << "i: " << i << std::endl;
+                if ((pollfds[i + 1].revents & POLLIN) && client_fds[i].is_receiving()) {
+//                    std::cout << "poll_in: " << i << std::endl;
+                    if (client_fds[i].socket_ready() != 0 && client_fds[i].timeout()) {
+                        std::cout << "client sock close" << std::endl;
                         close(pollfds[i + 1].fd);
                         client_fds.erase(client_fds.begin() + i);
                     }
-                } else if (pollfds[i + 1].revents & POLLOUT & !client_fds[i].is_receiving()) {
+                } else if ((pollfds[i + 1].revents & POLLOUT) && !client_fds[i].is_receiving()) {
                     std::cout << "poll_out: " << i << std::endl;
-                    if (client_fds[i].socket_ready() != 0) {
+                    if (client_fds[i].socket_ready() != 0 && client_fds[i].timeout()) {
+                        std::cout << "client sock close" << std::endl;
                         close(pollfds[i + 1].fd);
                         client_fds.erase(client_fds.begin() + i);
                     }
                 }
             }
+        }
+
+        for (int i = 1; i <= client_fds.size(); ++i) {
+            // Close client socket
+            close(pollfds[i].fd);
+            client_fds.erase(client_fds.begin());
         }
 
 //        fd_set read_fds;
@@ -483,7 +483,6 @@ int main(int argc, char *argv[]) {
 //        }
     } else {
         std::cerr << "Invalid server type!" << std::endl;
-        return 1;
     }
 
     // Close server socket

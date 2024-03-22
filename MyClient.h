@@ -26,16 +26,20 @@ namespace fs = std::filesystem;
 
 fs::path *find_file(const std::string &directory, const std::string &filename);
 
+long millis();
+
 class MyClient {
 
 public:
-    explicit MyClient(int client_socket,std::string directory_path);
+    explicit MyClient(int client_socket, std::string directory_path);
 
     ~MyClient();
 
     int socket_ready();
 
     bool is_receiving() const;
+
+    bool timeout() const;
 
 private:
     std::string _directory_path;
@@ -52,6 +56,7 @@ private:
 
     void process_received_data();
 
+    long _timer;
 };
 
 
