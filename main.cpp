@@ -1,5 +1,6 @@
 #include "MyClient.h"
 
+const std::string PROTOCOL_VERSION = "1.4.8.8";
 
 // Flag to indicate if the program should continue running
 volatile sig_atomic_t interrupted = 0;
@@ -14,6 +15,12 @@ void signal_handler(int signal) {
     interrupted = 1;
 }
 
+void send_err(int client_socket, int error_code, const std::string &error_msg) {
+    char buffer[BUFFER_SIZE];
+    sprintf(buffer, "PROTO:%s#ERR#%d#%s\x4", PROTOCOL_VERSION.c_str(), error_code, error_msg.c_str());
+
+    send(client_socket, buffer, strlen(buffer), 0);
+}
 
 int handle_client(int client_socket) {
     char buffer[BUFFER_SIZE];
@@ -32,7 +39,7 @@ int handle_client(int client_socket) {
     // Print the received data
     std::cout << "Received from client: ";
     std::cout.write(buffer, bytes_received);
-    std::cout << "/*END*/" << std::endl;
+    std::cout << std::endl;
 
     // Process received data (e.g., save to a file)
     // Parse protocol
@@ -42,11 +49,10 @@ int handle_client(int client_socket) {
         char cc = *c;
         protocol += cc;
     }
-    if (protocol != "PROTO:1.4.8.8") {
+    if (protocol != "PROTO:" + PROTOCOL_VERSION) {
         // Send response to client
         std::cerr << "Invalid protocol" << std::endl;
-        const char *response = "Invalid protocol";
-        send(client_socket, response, strlen(response), 0);
+        send_err(client_socket, 100, "Invalid protocol");
         return 0;
     }
     c++;
@@ -77,8 +83,7 @@ int handle_client(int client_socket) {
         if (*(c - 1) != 0x1C) {
             // Send response to client
             std::cout << "Invalid filename" << std::endl;
-            const char *response = "Invalid filename";
-            send(client_socket, response, strlen(response), 0);
+            send_err(client_socket, 101, "Invalid filename");
             return 0;
         }
         file_name.erase(file_name.size() - 1);
@@ -92,8 +97,7 @@ int handle_client(int client_socket) {
         if (filePath == nullptr) {
             // Send response to client
             std::cout << "File not found" << std::endl;
-            const char *response = "File not found";
-            send(client_socket, response, strlen(response), 0);
+            send_err(client_socket, 102, "File not found");
             return 0;
 
         }
@@ -103,14 +107,9 @@ int handle_client(int client_socket) {
         std::cout << "File size: " << fileSize << std::endl;
 
         // Send response to client
-        std::string response = "PROTO:1.4.8.8#NEW#OK#";
-        response += file_name;
-        response += (char) 0x1C;
-        response += '#';
-        response += std::to_string(fileSize);
-        response += (char) 0x4;
+        sprintf(buffer, "PROTO:%s#NEW#OK#%s\x1c#%lu\x4", PROTOCOL_VERSION.c_str(), file_name.c_str(), fileSize);
 
-        send(client_socket, response.c_str(), strlen(response.c_str()), 0);
+        send(client_socket, buffer, strlen(buffer), 0);
 
         return 0;
     } else if (command == "REC") {
@@ -119,12 +118,7 @@ int handle_client(int client_socket) {
         if (filePath == nullptr) {
             std::cout << "File not ready" << std::endl;
             // Send response to client
-            std::string response = "PROTO:1.4.8.8#REC#ERR#";
-            response += "File not ready";
-            response += (char) 0x4;
-
-            send(client_socket, response.c_str(), strlen(response.c_str()), 0);
-
+            send_err(client_socket, 103, "File not ready");
             return 0;
         }
 
@@ -134,28 +128,22 @@ int handle_client(int client_socket) {
             std::cout << "Failed to open file" << std::endl;
 
             // Send response to client
-            std::string response = "PROTO:1.4.8.8#REC#ERR#";
-            response += "Failed to open file";
-            response += (char) 0x4;
-
-            send(client_socket, response.c_str(), strlen(response.c_str()), 0);
+            send_err(client_socket, 104, "Failed to open file");
             return 0;
         }
 
         // Send response to client
-        const char *response_start = "PROTO:1.4.8.8#REC#OK#";
-        send(client_socket, response_start, strlen(response_start), 0);
-
-        char response_buffer[BUFFER_SIZE];
+        sprintf(buffer, "PROTO:%s#REC#OK#", PROTOCOL_VERSION.c_str());
+        send(client_socket, buffer, strlen(buffer), 0);
 
         do {
-            inputFile.read(&response_buffer[0], BUFFER_SIZE);
-            send(client_socket, response_buffer, inputFile.gcount(), 0);
-//            std::cout << "gcount: " << inputFile.gcount() << std::endl;
-        } while (inputFile.gcount() > 0);
+            inputFile.read(&buffer[0], BUFFER_SIZE);
+            send(client_socket, buffer, inputFile.gcount(), 0);
+            std::cout << "file read: " << buffer << std::endl;
+            std::cout << "gcount: " << inputFile.gcount() << std::endl;
+        } while (!inputFile.eof());
 
-        char end = 0x4;
-        send(client_socket, &end, 1, 0);
+        send(client_socket, &"\x4", 1, 0);
         std::cout << "SENT" << std::endl;
 
         return 0;
@@ -163,8 +151,7 @@ int handle_client(int client_socket) {
 
 
     // Send response to client
-    const char *response = "Invalid command";
-    send(client_socket, response, strlen(response), 0);
+    send_err(client_socket, 105, "Invalid command");
 
     return 0;
 }
@@ -195,11 +182,11 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'p':
-                if (*optarg > '4') {
+                parallel = std::stoi(optarg);
+                if (parallel > 4) {
                     print_usage();
                     return 1;
                 }
-                parallel = *optarg - '0';
                 break;
             default:
                 print_usage();
@@ -301,7 +288,7 @@ int main(int argc, char *argv[]) {
                     close(client_socket);
 
                     // Wait for any terminated child processes to prevent zombies
-                    while (waitpid(-1, NULL, WNOHANG) > 0);
+                    while (waitpid(-1, nullptr, WNOHANG) > 0);
                 }
             } else {
                 while (!interrupted && millis() - con_timeout < 30000) {
@@ -416,7 +403,7 @@ int main(int argc, char *argv[]) {
                         client_fds.erase(client_fds.begin() + i);
                     }
                 } else if ((pollfds[i + 1].revents & POLLOUT) && !client_fds[i].is_receiving()) {
-                    std::cout << "poll_out: " << i << std::endl;
+//                    std::cout << "poll_out: " << i << std::endl;
                     if (client_fds[i].socket_ready() != 0 && client_fds[i].timeout()) {
                         std::cout << "client sock close" << std::endl;
                         close(pollfds[i + 1].fd);

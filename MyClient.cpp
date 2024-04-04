@@ -47,7 +47,8 @@ int MyClient::socket_ready() {
         ssize_t bytes_received;
 
         // Receive data from client
-        bytes_received = recv(_client_socket, recv_buffer, MAX_DATA, 0);
+        bytes_received = recv(_client_socket, recv_buffer, std::min(MAX_DATA, (int) (BUFFER_SIZE - (_c - &_buffer[0]))),
+                              0);
         if (bytes_received < 0) {
             // Error receiving data (socket is likely not alive)
             return 1;
@@ -69,6 +70,7 @@ int MyClient::socket_ready() {
             std::cout << cc[0] << std::endl;
             if (_c - &_buffer[0] > BUFFER_SIZE) {
                 std::cerr << "Buffer overflow" << std::endl;
+                exit(0);
                 return 1;
             }
 
@@ -96,25 +98,23 @@ int MyClient::socket_ready() {
 
         char *cc = &send_buffer[0];
         for (; (cc - &send_buffer[0]) < MAX_DATA; cc++) {
-            std::cout << _c[0] << std::endl;
+//            std::cout << _c[0] << std::endl;
             if (_c - &_buffer[0] > BUFFER_SIZE) {
                 std::cerr << "Buffer overflow" << std::endl;
                 exit(0);
                 return 1;
             }
 
-            *cc = *_c;
-
             if (*_c == '\0') {//&& _file_offset != -1
                 fill_send_buffer();
                 if (strlen(_buffer) == 0) {
                     std::cerr << "Empty file" << std::endl;
-                    return 1;
+                    exit(0);
                 }
 
                 _c = &_buffer[0];
-                continue;
             }
+            *cc = *_c;
             _c++;
 
             if (*cc == 0x4) {
@@ -137,6 +137,7 @@ int MyClient::socket_ready() {
         std::cout << std::endl;
 
         send(_client_socket, send_buffer, strlen(send_buffer), 0);
+        _timer = millis();
     }
     return 0;
 }
@@ -277,6 +278,7 @@ bool MyClient::is_receiving() const {
 
 bool MyClient::timeout() const {
     if (millis() - _timer > 10000) {
+        std::cerr << "Timeout" << std::endl;
         return true;
     }
     return false;

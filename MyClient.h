@@ -20,7 +20,7 @@
 
 const int BUFFER_SIZE = 1024;
 
-const int MAX_DATA = 5;
+const int MAX_DATA = 128;
 
 namespace fs = std::filesystem;
 
